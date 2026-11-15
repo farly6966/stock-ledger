@@ -1,0 +1,44 @@
+name: 更新股價並發布
+
+on:
+  schedule:
+    - cron: "30 7 * * 1-5"   # 台灣時間週一到週五 15:30（收盤後）
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yfinance
+      - name: 抓最新收盤價
+        run: python scripts/update_prices.py
+      - name: 把新資料存回專案（抓失敗時下次還有舊資料可用）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || (git commit -m "更新股價 $(TZ=Asia/Taipei date +%F)" && git push)
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: "."
+      - id: deployment
+        uses: actions/deploy-pages@v4
