@@ -86,7 +86,10 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}
     <h1>股票帳本</h1>
     <span class="mut small" id="asof">讀取股價中…</span>
   </header>
+  <div class="seg" style="grid-template-columns:1fr 1fr" id="nav"><button data-v="ledger" class="on">帳本</button><button data-v="paper">模擬倉</button></div>
 
+  <div id="viewPaper" hidden style="display:none;flex-direction:column;gap:14px"><div id="paperBody" style="display:flex;flex-direction:column;gap:14px"></div></div>
+  <div id="viewLedger" style="display:flex;flex-direction:column;gap:14px">
   <section class="card hero" id="summary"></section>
 
   <section class="card">
@@ -127,10 +130,11 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}
       <div class="row" style="margin-top:8px"><button id="importTextBtn">匯入</button></div>
     </details>
   </section>
-  <p class="hint">投資前請自行判斷。本工具只做記帳與比較，不構成投資建議。</p>
+  </div>
+  <p class="hint">投資前請自行判斷。本工具只做記帳、模擬與比較，不構成投資建議。</p>
 </main>
 
-<button class="fab" id="fab" aria-label="新增交易">＋</button>
+<button class="fab" id="fab" aria-label="新增">＋</button>
 
 <div class="sheet-bg" id="sheetBg"></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
@@ -400,12 +404,15 @@ function manualPrice(code){
   $('mSave').onclick=()=>{ const v=+$('mPrice').value; S.manual=S.manual||{}; if(v>0) S.manual[code]=v; else delete S.manual[code]; saveState(); closeSheet(); render(); };
 }
 // ---------- 備份 ----------
-function backupText(){ return JSON.stringify({app:'stock-ledger', version:1, exported:new Date().toISOString(), ...S}); }
+function backupText(){ return JSON.stringify({app:'stock-ledger', version:1, exported:new Date().toISOString(), ...S, paper: PAPER.st}); }
 function importData(text){
   let v; try{ v=JSON.parse(text); }catch(e){ return toast('看不懂這份備份'); }
   if(!v || !Array.isArray(v.tx)) return toast('這不是股票帳本的備份');
   if(S.tx.length && !confirm(`匯入會取代目前的 ${S.tx.length} 筆紀錄，確定嗎？`)) return;
-  S={tx:v.tx, plans:v.plans||[], manual:v.manual||{}}; saveState(); render(); toast(`已匯入 ${S.tx.length} 筆`);
+  S={tx:v.tx, plans:v.plans||[], manual:v.manual||{}}; saveState();
+  // 舊備份沒有模擬倉：保留手機上現有的模擬倉；有的話問要不要一起還原
+  if(v.paper && v.paper.TWD && (!PAPER.st || confirm('備份裡也有模擬倉，要一起還原嗎？（會取代目前的模擬倉）'))){ PAPER.st=v.paper; savePaper(); }
+  render(); renderPaper(); toast(`已匯入 ${S.tx.length} 筆`);
 }
 $('exportBtn').onclick=()=>{ const b=new Blob([backupText()],{type:'application/json'}), u=URL.createObjectURL(b), a=document.createElement('a');
   a.href=u; a.download=`股票帳本備份-${today()}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),2000); };
@@ -414,7 +421,17 @@ $('importFile').onchange=e=>{ const f=e.target.files[0]; if(!f) return; f.text()
 $('importTextBtn').onclick=()=>importData($('importText').value);
 
 // ---------- 事件 ----------
-$('fab').onclick=()=>txForm(null);
+let VIEW='ledger';
+function setView(v){
+  VIEW=v; $('viewLedger').hidden = v!=='ledger'; $('viewPaper').hidden = v!=='paper';
+  $('viewLedger').style.display = v==='ledger'? 'flex':'none'; $('viewPaper').style.display = v==='paper'? 'flex':'none';
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===v));
+  $('fab').setAttribute('aria-label', v==='paper'? '模擬下單' : '新增交易');
+  if(v==='paper'){ renderPaper(); paperRefresh(true); }
+  try{ localStorage.setItem('stockLedger.view', v); }catch(e){}
+}
+$('nav').onclick=e=>{ const b=e.target.closest('button'); if(b) setView(b.dataset.v); };
+$('fab').onclick=()=> VIEW==='paper'? orderSheet() : txForm(null);
 $('addPlan').onclick=()=>planForm(null);
 $('sheetBg').onclick=closeSheet;
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeSheet(); });
@@ -431,8 +448,13 @@ async function loadData(){
     PR=p; BM=b;
   }catch(e){ toast('股價讀取失敗，請檢查網路'); }
   render();
+  if(VIEW==='paper') paperRefresh(true);
 }
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') loadData(); });
+</script>
+<script src="paper.js"></script>
+<script>
+try{ if(localStorage.getItem('stockLedger.view')==='paper') setView('paper'); }catch(e){}
 render(); loadData();
 </script>
 </body>

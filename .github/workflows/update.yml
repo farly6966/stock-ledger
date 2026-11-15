@@ -2,7 +2,10 @@ name: 更新股價並發布
 
 on:
   schedule:
-    - cron: "30 7 * * 1-5"   # 台灣時間週一到週五 15:30（收盤後）
+    # 交易所公布資料的時間不固定，一天跑三次，漏掉的下一次補上
+    - cron: "30 7 * * 1-5"    # 台灣 15:30（台股收盤後）
+    - cron: "0 12 * * 1-5"    # 台灣 20:00（再確認一次台股）
+    - cron: "30 22 * * 1-5"   # 台灣隔天 06:30（美股收盤後）
   push:
     branches: [main]
   workflow_dispatch:
@@ -35,7 +38,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data
-          git diff --cached --quiet || (git commit -m "更新股價 $(TZ=Asia/Taipei date +%F)" && git push)
+          git diff --cached --quiet || (git commit -m "更新股價 $(TZ=Asia/Taipei date +%F)" && git pull --rebase && git push)
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

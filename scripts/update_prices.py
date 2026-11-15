@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "data")
-BENCH = {"0050": "0050.TW", "0056": "0056.TW", "00646": "00646.TW"}
+BENCH = {"0050": "0050.TW", "0056": "0056.TW", "00646": "00646.TW", "VOO": "VOO"}
 CODE_RE = re.compile(r"^(\d{4}|00\d{2,4}[A-Z]?)$")  # 一般股票 4 碼、ETF 00 開頭
 
 
@@ -48,28 +48,92 @@ def num(x):
         return None
 
 
+def ohlc(r, keys):
+    v = [num(r.get(k)) for k in keys]
+    return [round(x, 4) for x in v] if all(v) else None
+
+
 def fetch_prices():
-    prices, dates = {}, set()
+    """最新收盤價（帳本用），同時把當天完整日K存成快照（模擬倉用）。上市、上櫃日期分開記。"""
+    prices, dates, snaps = {}, {}, {}
     rows = get_json("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL")
+    snap = {}
     for r in rows:
         c, p = r.get("Code", ""), num(r.get("ClosingPrice"))
         if CODE_RE.match(c) and p:
             prices[c] = {"n": r.get("Name", "").strip(), "c": p, "m": "上市"}
-            dates.add(roc_date(r["Date"]))
+            dates.setdefault("twse", set()).add(roc_date(r["Date"]))
+            bar = ohlc(r, ("OpeningPrice", "HighestPrice", "LowestPrice", "ClosingPrice"))
+            if bar:
+                snap[c] = bar
+    if len(dates.get("twse", ())) == 1:
+        snaps["twse"] = (next(iter(dates["twse"])), snap)
     n_twse = len(prices)
     try:
         rows = get_json("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes")
+        snap = {}
         for r in rows:
             c, p = r.get("SecuritiesCompanyCode", ""), num(r.get("Close"))
             if CODE_RE.match(c) and p and c not in prices:
                 prices[c] = {"n": r.get("CompanyName", "").strip(), "c": p, "m": "上櫃"}
-                dates.add(roc_date(r["Date"]))
+                dates.setdefault("tpex", set()).add(roc_date(r["Date"]))
+                bar = ohlc(r, ("Open", "High", "Low", "Close"))
+                if bar:
+                    snap[c] = bar
+        if len(dates.get("tpex", ())) == 1:
+            snaps["tpex"] = (next(iter(dates["tpex"])), snap)
     except Exception as e:  # 上櫃失敗不影響上市
         print("上櫃資料失敗：", e)
-    print(f"上市 {n_twse} 檔，上櫃 {len(prices) - n_twse} 檔，日期 {sorted(dates)}")
+    print(f"上市 {n_twse} 檔，上櫃 {len(prices) - n_twse} 檔，日期 { {k: sorted(v) for k, v in dates.items()} }")
     if n_twse < 500:
         raise RuntimeError("上市資料筆數太少，可能抓錯")
-    return {"date": max(dates), "updated": int(time.time()), "prices": prices}
+    # 日K快照：檔名用資料裡的日期（不是執行日期），同一天重跑會覆蓋成同樣內容
+    for mkt, (d, snap) in snaps.items():
+        if len(snap) > 100:
+            save(f"daily/{mkt}/{d}.json", snap)
+            print(f"快照 {mkt} {d}：{len(snap)} 檔")
+    all_dates = [max(v) for v in dates.values()]
+    return {"date": max(all_dates), "dates": {k: max(v) for k, v in dates.items()},
+            "updated": int(time.time()), "prices": prices}
+
+
+def write_index():
+    idx = {}
+    for mkt in ("twse", "tpex"):
+        d = os.path.join(OUT, "daily", mkt)
+        idx[mkt] = sorted(f[:-5] for f in os.listdir(d) if f.endswith(".json")) if os.path.isdir(d) else []
+    save("daily/index.json", idx)
+
+
+def fetch_us():
+    """美股日K：清單在 data/us_symbols.txt。每次重抓一年，漏掉的日子下次自動補回。"""
+    import datetime as dt
+    import yfinance as yf
+    from zoneinfo import ZoneInfo
+    path = os.path.join(OUT, "us_symbols.txt")
+    syms = [x.strip().upper() for x in open(path, encoding="utf-8") if x.strip() and not x.startswith("#")]
+    ny = dt.datetime.now(ZoneInfo("America/New_York"))
+    today = ny.strftime("%Y-%m-%d")
+    closed = ny.weekday() >= 5 or (ny.hour, ny.minute) >= (16, 30)
+    df = yf.download(syms, period="1y", interval="1d", auto_adjust=False, group_by="ticker", progress=False, threads=True)
+    out = {}
+    for s in syms:
+        try:
+            d = df[s].dropna(subset=["Open", "High", "Low", "Close"])
+        except KeyError:
+            continue
+        rows = []
+        for ts, r in d.iterrows():
+            day = ts.strftime("%Y-%m-%d")
+            if day == today and not closed:
+                continue  # 盤中還沒收完的K棒不要
+            rows.append([day] + [round(float(r[k]), 4) for k in ("Open", "High", "Low", "Close")])
+        if rows:
+            out[s] = rows
+    print(f"美股 {len(out)}/{len(syms)} 檔，最後日期 {max(r[-1][0] for r in out.values()) if out else None}")
+    if len(out) < len(syms) * 0.8:
+        raise RuntimeError("美股抓到的檔數太少")
+    return {"updated": int(time.time()), "rows": out}
 
 
 def fetch_bench():
@@ -90,6 +154,7 @@ def fetch_bench():
 def save(name, obj):
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
@@ -98,12 +163,13 @@ def save(name, obj):
 
 def main():
     ok = 0
-    for name, fn in (("prices.json", fetch_prices), ("bench.json", fetch_bench)):
+    for name, fn in (("prices.json", fetch_prices), ("bench.json", fetch_bench), ("daily/us.json", fetch_us)):
         try:
             save(name, fn())
             ok += 1
         except Exception as e:
             print(f"⚠️ {name} 更新失敗，保留舊檔：{e}")
+    write_index()
     if ok == 0 and not os.path.exists(os.path.join(OUT, "prices.json")):
         sys.exit(1)
 
