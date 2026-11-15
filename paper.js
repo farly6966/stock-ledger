@@ -228,11 +228,11 @@ function renderPaper(){
     </section>
     <section class="card"><details><summary>規則說明</summary><p class="hint">只做多，用日K結算。按「買進」後，用<b>下一個開盤</b>的價格成交（盤前下單＝當天開盤，盤中或收盤後下單＝下一個交易日開盤）。停損和目標用每天的最高、最低價檢查，同一天都碰到時先算停損；開盤就跳空跌破停損，用開盤價出場。股價沒有還原除權息，除權息那天價格會往下跳，可能碰到停損。美股能交易的代號在 GitHub 專案的 data/us_symbols.txt，要加新代號就加在那裡。和大盤的比較是從進場前一天收盤到出場當天收盤，屬於約略比較。</p>
       <div class="row"><button class="danger" id="pvReset">重設模擬倉</button></div></details></section>`;
-  $('pvCurSeg').onclick=e=>{ const b=e.target.closest('button'); if(b){ PAPER.cur=b.dataset.c; renderPaper(); } };
+  $('pvCurSeg').onclick=e=>{ const b=e.target.closest('button'); if(b){ PAPER.cur=b.dataset.c; renderPaper(); if(window.renderStrong) renderStrong(); } };
   $('pvRefresh').onclick=()=>paperRefresh(false);
   $('pvReset').onclick=()=>{ if(!confirm('重設會清掉兩個模擬帳戶的持倉、掛單和成績，確定嗎？')) return; PAPER.st=null; savePaper(); try{localStorage.removeItem(PKEY);}catch(e){} renderPaper(); };
 }
-function orderSheet(){
+function orderSheet(prefill){
   if(!PAPER.st) return toast('請先建立模擬倉');
   const cur=PAPER.cur, A=PAPER.st[cur];
   openSheet(`<h2 id="sheetTitle" style="margin:0">${cur==='TWD'?'台股':'美股'}模擬下單（買進）</h2>
@@ -257,6 +257,7 @@ function orderSheet(){
     } else $('oInfo').textContent='';
   };
   ['oCode','oStop','oTgt'].forEach(id=>$(id).oninput=info);
+  if(prefill){ $('oCode').value=prefill; info(); $('oStop').focus(); }
   $('oCancel').onclick=closeSheet;
   $('oSubmit').onclick=()=>{
     const code=$('oCode').value.trim().toUpperCase(), px=lastPrice(cur,code), stop=+$('oStop').value, tgt=$('oTgt').value===''? null : +$('oTgt').value;

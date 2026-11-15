@@ -53,6 +53,9 @@ def ohlc(r, keys):
     return [round(x, 4) for x in v] if all(v) else None
 
 
+LIQ = {}  # 今天的成交金額，挑強勢股的候選名單用：{代號: (成交金額, Yahoo代號, 名稱)}
+
+
 def fetch_prices():
     """最新收盤價（帳本用），同時把當天完整日K存成快照（模擬倉用）。上市、上櫃日期分開記。"""
     prices, dates, snaps = {}, {}, {}
@@ -62,6 +65,7 @@ def fetch_prices():
         c, p = r.get("Code", ""), num(r.get("ClosingPrice"))
         if CODE_RE.match(c) and p:
             prices[c] = {"n": r.get("Name", "").strip(), "c": p, "m": "上市"}
+            LIQ[c] = (num(r.get("TradeValue")) or 0, c + ".TW", prices[c]["n"])
             dates.setdefault("twse", set()).add(roc_date(r["Date"]))
             bar = ohlc(r, ("OpeningPrice", "HighestPrice", "LowestPrice", "ClosingPrice"))
             if bar:
@@ -76,6 +80,7 @@ def fetch_prices():
             c, p = r.get("SecuritiesCompanyCode", ""), num(r.get("Close"))
             if CODE_RE.match(c) and p and c not in prices:
                 prices[c] = {"n": r.get("CompanyName", "").strip(), "c": p, "m": "上櫃"}
+                LIQ[c] = (num(r.get("TransactionAmount")) or 0, c + ".TWO", prices[c]["n"])
                 dates.setdefault("tpex", set()).add(roc_date(r["Date"]))
                 bar = ohlc(r, ("Open", "High", "Low", "Close"))
                 if bar:
@@ -151,6 +156,72 @@ def fetch_bench():
     return {"updated": int(time.time()), "bench": out}
 
 
+US_ETF = {"VOO", "SPY", "QQQ", "VTI", "VT", "SCHD", "VYM", "SOXX", "SMH", "TLT", "GLD", "IWM", "DIA"}
+N_TWSE, N_TPEX, TOP = 200, 100, 10
+
+
+def kt_score(d, L=20):
+    """ktshen 強勢分數（同 backtest_rs_tw.py）：
+    N = [(C-MA30)+(C-MA45)+(C-MA60)+(MA30-MA45)+(MA30-MA60)+(MA45-MA60)] / ATR60，分數 = 最近 L 天 N 的平均"""
+    import numpy as np
+    C, H, Lo = d["Close"], d["High"], d["Low"]
+    m30, m45, m60 = (C.rolling(n).mean() for n in (30, 45, 60))
+    pc = C.shift(1)
+    tr = np.maximum(H - Lo, np.maximum((H - pc).abs(), (Lo - pc).abs()))
+    atr = tr.rolling(60).mean()
+    N = ((C - m30) + (C - m45) + (C - m60) + (m30 - m45) + (m30 - m60) + (m45 - m60)) / atr
+    return N.rolling(L).mean()
+
+
+def bars_of(d, n=250):
+    d = d.tail(n)
+    return [[ts.strftime("%Y-%m-%d")] + [round(float(r[k]), 4) for k in ("Open", "High", "Low", "Close")] + [int(r["Volume"] or 0)]
+            for ts, r in d.iterrows()]
+
+
+def build_strong():
+    """每天挑強勢股：台股取成交金額前 200（上市）+ 前 100（上櫃）的股票，美股用清單裡的個股；
+    用一年日K算強勢分數，分數 > 0 的前 10 名連同K線存進 data/strong.json"""
+    import yfinance as yf
+    if not LIQ:
+        raise RuntimeError("沒有今天的成交資料，無法挑候選股")
+    stocks = [(c, v) for c, v in LIQ.items() if not c.startswith("00")]
+    tw_cand = sorted([x for x in stocks if x[1][1].endswith(".TW")], key=lambda x: -x[1][0])[:N_TWSE] +               sorted([x for x in stocks if x[1][1].endswith(".TWO")], key=lambda x: -x[1][0])[:N_TPEX]
+    us_syms = [x.strip().upper() for x in open(os.path.join(OUT, "us_symbols.txt"), encoding="utf-8")
+               if x.strip() and not x.startswith("#")]
+    us_cand = [s for s in us_syms if s not in US_ETF]
+
+    def rank(cands, index_sym, index_name):
+        syms = [y for _, y, _ in cands] + [index_sym]
+        df = yf.download(syms, period="1y", interval="1d", auto_adjust=False, group_by="ticker", progress=False, threads=True)
+        out = []
+        for code, ysym, name in cands:
+            try:
+                d = df[ysym].dropna(subset=["Open", "High", "Low", "Close"])
+            except KeyError:
+                continue
+            if len(d) < 100:
+                continue
+            sc = kt_score(d).iloc[-1]
+            if sc == sc and sc > 0:  # 不是 NaN 且大於 0
+                out.append({"code": code, "name": name, "score": round(float(sc), 3), "date": d.index[-1].strftime("%Y-%m-%d"),
+                            "close": round(float(d["Close"].iloc[-1]), 4), "bars": bars_of(d)})
+        out.sort(key=lambda x: -x["score"])
+        for i, x in enumerate(out):
+            x["rank"] = i + 1
+        idx = df[index_sym].dropna(subset=["Open", "High", "Low", "Close"])
+        ix_score = kt_score(idx).iloc[-1]
+        print(f"{index_name}：候選 {len(cands)}，分數>0 的 {len(out)} 檔，前三 {[(x['code'], x['score']) for x in out[:3]]}")
+        return {"index": {"code": index_sym, "name": index_name, "score": None if ix_score != ix_score else round(float(ix_score), 3),
+                          "bars": bars_of(idx)}, "pool": len(cands), "positive": len(out), "list": out[:TOP]}
+
+    tw = rank([(c, v[1], v[2]) for c, v in tw_cand], "^TWII", "加權指數")
+    us = rank([(s, s, s) for s in us_cand], "^GSPC", "S&P 500")
+    if len(tw["list"]) < 3:
+        raise RuntimeError("台股強勢股太少，可能抓資料失敗")
+    return {"updated": int(time.time()), "tw": tw, "us": us}
+
+
 def save(name, obj):
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, name)
@@ -163,7 +234,8 @@ def save(name, obj):
 
 def main():
     ok = 0
-    for name, fn in (("prices.json", fetch_prices), ("bench.json", fetch_bench), ("daily/us.json", fetch_us)):
+    for name, fn in (("prices.json", fetch_prices), ("bench.json", fetch_bench), ("daily/us.json", fetch_us),
+                     ("strong.json", build_strong)):
         try:
             save(name, fn())
             ok += 1

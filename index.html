@@ -77,6 +77,13 @@ label.f input,label.f select,textarea{font:16px var(--font);color:var(--fg);back
 .hint{font-size:12.5px;color:var(--mut)}
 .toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:10px;z-index:30;display:none;max-width:90vw;font-size:14px}
 details summary{cursor:pointer;color:var(--mut);font-size:13px}
+.scroller{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none;margin:8px -4px 0}
+.scroller::-webkit-scrollbar{display:none}
+.slide{flex:0 0 100%;scroll-snap-align:start;padding:0 4px;min-width:0}
+.dots{display:flex;justify-content:center;gap:6px;margin-top:6px}
+.dots i{width:6px;height:6px;border-radius:50%;background:var(--line)}
+.dots i.on{background:var(--acc)}
+button.mini{padding:2px 10px;font-size:18px;line-height:1.2}
 @media (prefers-reduced-motion:no-preference){ .sheet.on{animation:up .18s ease-out} @keyframes up{from{transform:translateY(30px);opacity:.6}} }
 </style>
 </head>
@@ -88,7 +95,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}
   </header>
   <div class="seg" style="grid-template-columns:1fr 1fr" id="nav"><button data-v="ledger" class="on">帳本</button><button data-v="paper">模擬倉</button></div>
 
-  <div id="viewPaper" hidden style="display:none;flex-direction:column;gap:14px"><div id="paperBody" style="display:flex;flex-direction:column;gap:14px"></div></div>
+  <div id="viewPaper" hidden style="display:none;flex-direction:column;gap:14px"><div id="strongBox" style="display:flex;flex-direction:column;gap:14px"></div><div id="paperBody" style="display:flex;flex-direction:column;gap:14px"></div></div>
   <div id="viewLedger" style="display:flex;flex-direction:column;gap:14px">
   <section class="card hero" id="summary"></section>
 
@@ -427,7 +434,7 @@ function setView(v){
   $('viewLedger').style.display = v==='ledger'? 'flex':'none'; $('viewPaper').style.display = v==='paper'? 'flex':'none';
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===v));
   $('fab').setAttribute('aria-label', v==='paper'? '模擬下單' : '新增交易');
-  if(v==='paper'){ renderPaper(); paperRefresh(true); }
+  if(v==='paper'){ renderPaper(); paperRefresh(true); strongLoad(); }
   try{ localStorage.setItem('stockLedger.view', v); }catch(e){}
 }
 $('nav').onclick=e=>{ const b=e.target.closest('button'); if(b) setView(b.dataset.v); };
@@ -448,11 +455,13 @@ async function loadData(){
     PR=p; BM=b;
   }catch(e){ toast('股價讀取失敗，請檢查網路'); }
   render();
-  if(VIEW==='paper') paperRefresh(true);
+  if(VIEW==='paper'){ paperRefresh(true); strongLoad(); }
 }
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') loadData(); });
 </script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="paper.js"></script>
+<script src="strong.js"></script>
 <script>
 try{ if(localStorage.getItem('stockLedger.view')==='paper') setView('paper'); }catch(e){}
 render(); loadData();
